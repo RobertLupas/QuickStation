@@ -1,0 +1,91 @@
+#!/bin/bash
+
+set +e
+
+CURRENT_HOSTNAME=`cat /etc/hostname | tr -d " \t\n\r"`
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_hostname apollo
+else
+   echo apollo >/etc/hostname
+   sed -i "s/127.0.1.1.*$CURRENT_HOSTNAME/127.0.1.1\tapollo/g" /etc/hosts
+fi
+FIRSTUSER=`getent passwd 1000 | cut -d: -f1`
+FIRSTUSERHOME=`getent passwd 1000 | cut -d: -f6`
+if [ -f /usr/lib/userconf-pi/userconf ]; then
+   /usr/lib/userconf-pi/userconf 'apollo' '$5$XO4a6or5G6$2Ei0taxICgeqdpxXPEiPja3IvpOtm0hlzJmfyAwTiK8'
+else
+   echo "$FIRSTUSER:"'$5$XO4a6or5G6$2Ei0taxICgeqdpxXPEiPja3IvpOtm0hlzJmfyAwTiK8' | chpasswd -e
+   if [ "$FIRSTUSER" != "apollo" ]; then
+      usermod -l "apollo" "$FIRSTUSER"
+      usermod -m -d "/home/apollo" "apollo"
+      groupmod -n "apollo" "$FIRSTUSER"
+      if grep -q "^autologin-user=" /etc/lightdm/lightdm.conf ; then
+         sed /etc/lightdm/lightdm.conf -i -e "s/^autologin-user=.*/autologin-user=apollo/"
+      fi
+      if [ -f /etc/systemd/system/getty@tty1.service.d/autologin.conf ]; then
+         sed /etc/systemd/system/getty@tty1.service.d/autologin.conf -i -e "s/$FIRSTUSER/apollo/"
+      fi
+      if [ -f /etc/sudoers.d/010_pi-nopasswd ]; then
+         sed -i "s/^$FIRSTUSER /apollo /" /etc/sudoers.d/010_pi-nopasswd
+      fi
+   fi
+fi
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_wlan 'UPC9181828' '0e00726733ce360dbcea7c341d0071b86467223689a74396ca16f60ce38a0a06' 'RO'
+else
+cat >/etc/wpa_supplicant/wpa_supplicant.conf <<'WPAEOF'
+country=RO
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+ap_scan=1
+
+update_config=1
+network={
+	ssid="UPC9181828"
+	psk=0e00726733ce360dbcea7c341d0071b86467223689a74396ca16f60ce38a0a06
+}
+
+WPAEOF
+   chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+   rfkill unblock wifi
+   for filename in /var/lib/systemd/rfkill/*:wlan ; do
+       echo 0 > $filename
+   done
+fi
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_keymap 'us'
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_timezone 'Europe/Bucharest'
+else
+   rm -f /etc/localtime
+   echo "Europe/Bucharest" >/etc/timezone
+   dpkg-reconfigure -f noninteractive tzdata
+cat >/etc/default/keyboard <<'KBEOF'
+XKBMODEL="pc105"
+XKBLAYOUT="us"
+XKBVARIANT=""
+XKBOPTIONS=""
+
+KBEOF
+   dpkg-reconfigure -f noninteractive keyboard-configuration
+fi
+
+# [===== Cockpit Setup =====]
+for i in {1..120}; do
+    if ping -c 1 8.8.8.8 &>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+# Update system and install Cockpit
+sudo apt-get update && sudo apt-get upgrade -y
+
+sudo apt-get install -y cockpit
+
+sudo systemctl enable cockpit
+sudo systemctl enable --now cockpit.socket
+# [===== Cockpit Setup =====]
+
+rm -f /boot/firstrun.sh
+sed -i 's| systemd.run.*||g' /boot/cmdline.txt
+
+reboot
